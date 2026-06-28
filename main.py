@@ -3,11 +3,13 @@ from pathlib import Path
 
 from src.data.loader import load_from_config
 from src.data.preprocessor import add_cyclic_features, split_data, fit_scaler, scale
-from src.data.sequencer import make_sequences
+from src.data.sequencer import make_sequences, make_persistence_sequences
 from src.models.lstm import LSTMModel
 from src.models.gru import GRUModel
 from src.models.linear import LinearModel
 from src.training.trainer import run_training
+from src.evaluation.metrics import compute_metrics, compute_skill_score
+from src.data.preprocessor import inverse_scale_column
 
 
 def load_config(path: str) -> dict:
@@ -58,12 +60,22 @@ def main(config_path: str = "configs/terkos_baseline.yaml"):
 
     print(f"Sekans boyutlari — Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
 
+    # Persistence baseline
+    y_pers_scaled = make_persistence_sequences(test_s, target_col, lookback, horizon)
+    y_pers = inverse_scale_column(y_pers_scaled, scaler, all_columns, target_col)
+    y_true_ref = inverse_scale_column(y_test, scaler, all_columns, target_col)
+    pers_metrics = compute_metrics(y_true_ref, y_pers)
+    print(f"\n[Persistence] RMSE: {pers_metrics['rmse']:.4f}  MAE: {pers_metrics['mae']:.4f}  R²: {pers_metrics['r2']:.4f}")
+
     model_type = cfg["model"]["type"]
     model = get_model(model_type, {**cfg["model"], "horizon": horizon})
-    run_training(
+    model_metrics = run_training(
         model, X_train, y_train, X_val, y_val, X_test, y_test,
         scaler, all_columns, target_col, cfg, label=model_type,
     )
+    skill = compute_skill_score(model_metrics["rmse"], pers_metrics["rmse"])
+    skill_label = "faydali (>=0.30)" if skill >= 0.3 else "gelistirilebilir"
+    print(f"Skill Score ({model_type}): {skill:.4f}  [{skill_label}]")
 
 
 if __name__ == "__main__":

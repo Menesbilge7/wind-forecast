@@ -16,8 +16,8 @@ import streamlit as st
 
 from src.data.loader import load_csv
 from src.data.preprocessor import add_cyclic_features, split_data, fit_scaler, scale, inverse_scale_column
-from src.data.sequencer import make_sequences
-from src.evaluation.metrics import compute_metrics
+from src.data.sequencer import make_sequences, make_persistence_sequences
+from src.evaluation.metrics import compute_metrics, compute_skill_score
 
 st.set_page_config(
     page_title="Rüzgar Hızı Tahmin Sistemi",
@@ -226,6 +226,7 @@ if not _skip_common:
     X_train, y_train = make_sequences(train_s, feature_cols, target_col, lookback, horizon)
     X_val,   y_val   = make_sequences(val_s,   feature_cols, target_col, lookback, horizon)
     X_test,  y_test  = make_sequences(test_s,  feature_cols, target_col, lookback, horizon)
+    y_pers_test      = make_persistence_sequences(test_s, target_col, lookback, horizon)
 
     dl_cfg = {
         "units": [units_1, units_2],
@@ -571,20 +572,40 @@ elif page == "Model Karşılaştırması":
                 state="complete",
             )
 
+    # ── Persistence baseline ──────────────────────────────────────────────────
+    y_pers = inverse_scale_column(y_pers_test, scaler, all_columns, target_col)
+    y_true_ref = list(predictions.values())[0][0]  # y_true aynı tüm modeller için
+    pers_metrics = compute_metrics(y_true_ref, y_pers)
+
     # ── Özet metrik tablosu ───────────────────────────────────────────────────
     st.subheader("📊 Karşılaştırma Tablosu")
     rows = []
     for mtype, met in results.items():
-        rows.append({"Model": mtype.upper(), "R²": round(met["r2"], 4),
-                     "RMSE (m/s)": round(met["rmse"], 4), "MAE (m/s)": round(met["mae"], 4)})
+        skill = compute_skill_score(met["rmse"], pers_metrics["rmse"])
+        rows.append({
+            "Model": mtype.upper(),
+            "R²": round(met["r2"], 4),
+            "RMSE (m/s)": round(met["rmse"], 4),
+            "MAE (m/s)": round(met["mae"], 4),
+            "Skill Score": round(skill, 4),
+        })
+    rows.append({
+        "Model": "PERSISTENCE",
+        "R²": round(pers_metrics["r2"], 4),
+        "RMSE (m/s)": round(pers_metrics["rmse"], 4),
+        "MAE (m/s)": round(pers_metrics["mae"], 4),
+        "Skill Score": 0.0,
+    })
     cmp_df = pd.DataFrame(rows).set_index("Model")
     best_r2 = cmp_df["R²"].idxmax()
     st.dataframe(
-        cmp_df.style.highlight_max(subset=["R²"], color="#d4edda")
+        cmp_df.style.highlight_max(subset=["R²", "Skill Score"], color="#d4edda")
                     .highlight_min(subset=["RMSE (m/s)", "MAE (m/s)"], color="#d4edda"),
         use_container_width=True,
     )
-    st.success(f"En iyi model: **{best_r2}** (R² = {cmp_df.loc[best_r2, 'R²']})")
+    best_skill = cmp_df.loc[best_r2, "Skill Score"]
+    skill_label = "✓ faydalı (>0.30)" if best_skill >= 0.3 else "△ geliştirilebilir"
+    st.success(f"En iyi model: **{best_r2}** — R²={cmp_df.loc[best_r2, 'R²']} · Skill Score={best_skill} {skill_label}")
 
     # ── Bar chart ─────────────────────────────────────────────────────────────
     st.subheader("📈 Metrik Grafiği")

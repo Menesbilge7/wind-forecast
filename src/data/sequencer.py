@@ -19,3 +19,22 @@ def make_sequences(
         y.append(target[i : i + horizon])
 
     return np.array(X), np.array(y)
+
+
+def make_persistence_sequences(
+    df: pd.DataFrame,
+    target_column: str,
+    lookback: int,
+    horizon: int = 1,
+) -> np.ndarray:
+    """
+    Persistence baseline: t+h tahmini = t anındaki son bilinen değer.
+    Rüzgar tahmininde standart kıyas noktası budur.
+    Döndürür: (n, horizon) — her sekans için horizon adımlık sabit tahmin.
+    """
+    target = df[target_column].values
+    y_pers = [
+        np.full(horizon, target[i - 1])
+        for i in range(lookback, len(df) - horizon + 1)
+    ]
+    return np.array(y_pers)

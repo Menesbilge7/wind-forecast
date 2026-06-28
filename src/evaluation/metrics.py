@@ -34,6 +34,15 @@ def _single_step_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     }
 
 
+def compute_skill_score(rmse_model: float, rmse_persistence: float) -> float:
+    """
+    Persistence üzerindeki iyileşme oranı (0–1 arası, negatif = persistence'tan kötü).
+    Sektörde >0.30 faydalı, >0.50 iyi kabul edilir.
+    Formül: 1 - RMSE_model / RMSE_persistence
+    """
+    return 1.0 - rmse_model / rmse_persistence
+
+
 def print_metrics(metrics: dict, label: str = "") -> None:
     prefix = f"[{label}] " if label else ""
     print(f"{prefix}RMSE: {metrics['rmse']:.4f}  MAE: {metrics['mae']:.4f}  "
