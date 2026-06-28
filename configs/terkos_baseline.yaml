@@ -12,6 +12,7 @@ data:
     - gunler_cos
     - otuz_metre
     - yirmi_metre
+    - on_metre      # autoregressive: geçmiş hedef değerleri modele verilir
     - sicaklik
     - nem
     - basinc

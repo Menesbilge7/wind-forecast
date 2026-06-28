@@ -145,6 +145,7 @@ with st.sidebar:
     separator = st.selectbox("Separator", [";", ",", "\\t"], index=0)
     decimal   = st.selectbox("Ondalık ayırıcı", [",", "."], index=0)
     target_col = st.text_input("Hedef sütun", value="on_metre")
+    autoregressive = st.checkbox("Autoregressive (hedef geçmişi özellik olarak ekle)", value=True)
     train_ratio = st.slider("Train oranı (%)", 60, 90, 80) / 100
     val_ratio   = st.slider("Validation oranı (%)", 5, 20, 10) / 100
     st.divider()
@@ -203,7 +204,7 @@ if not _skip_common:
         df = df[numeric_cols]
         st.caption(f"Sayısal olmayan sütunlar çıkarıldı: {dropped}")
 
-    feature_cols = [c for c in df.columns if c != target_col]
+    feature_cols = list(df.columns) if autoregressive else [c for c in df.columns if c != target_col]
     all_columns  = list(dict.fromkeys(feature_cols + [target_col]))
 
     with st.expander("📋 Veri Önizleme", expanded=False):
