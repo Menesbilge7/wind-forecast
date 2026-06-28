@@ -1,0 +1,37 @@
+location: terkos
+
+data:
+  path: data/raw/enesveri_hepsi.csv
+  separator: ";"
+  decimal: ","
+  target_column: on_metre
+  feature_columns:
+    - saat_sin
+    - saat_cos
+    - gunler_sin
+    - gunler_cos
+    - otuz_metre
+    - yirmi_metre
+    - sicaklik
+    - nem
+    - basinc
+  train_ratio: 0.8
+  val_ratio: 0.1
+
+sequence:
+  lookback: 48        # 48 saat geriye bak (çok adımda daha uzun geçmiş gerekir)
+  horizon: 24         # 24 saat ilerisi tahmin
+
+model:
+  type: gru           # lstm | gru | linear | transformer
+  units: [128, 64]
+  dropout: 0.2
+  epochs: 100
+  batch_size: 32
+  learning_rate: 0.001
+  patience: 10
+
+output:
+  models_dir: outputs/models
+  plots_dir: outputs/plots
+  reports_dir: outputs/reports

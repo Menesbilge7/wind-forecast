@@ -1,0 +1,39 @@
+# Sanal ortam
+.venv/
+venv/
+env/
+
+# Eğitilmiş model dosyaları (büyük, kullanıcı tarafından eğitilir)
+outputs/models/
+outputs/plots/
+outputs/reports/
+
+# Ham veri (kişisel / büyük dosyalar)
+data/raw/
+data/external/
+
+# ERA5 NetCDF (çok büyük olabilir)
+*.nc
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit secrets (API anahtarları buraya eklenir, repo'ya girmemeli)
+.streamlit/secrets.toml
