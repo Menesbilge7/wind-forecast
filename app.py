@@ -246,21 +246,29 @@ if page == "ERA5 Veri İndir":
     st.subheader("🌍 ERA5 Veri İndirici")
     st.caption("Copernicus Climate Data Store — herhangi bir koordinat için saatlik meteorolojik veri")
 
-    cdsapirc = Path.home() / ".cdsapirc"
-    if not cdsapirc.exists():
-        st.error(
-            "**CDS API anahtarı bulunamadı.**\n\n"
-            "1. [cds.climate.copernicus.eu](https://cds.climate.copernicus.eu) adresine kaydol\n"
-            "2. Profil sayfasından **Personal Access Token** al\n"
-            "3. Terminale şunu yaz:\n"
-            "```\n"
-            "! echo url: https://cds.climate.copernicus.eu/api > %USERPROFILE%\\.cdsapirc\n"
-            "! echo key: BURAYA_TOKEN >> %USERPROFILE%\\.cdsapirc\n"
-            "```"
-        )
-        st.stop()
-
-    st.success("CDS API anahtarı bulundu.")
+    _cds_url, _cds_key = None, None
+    try:
+        _cds_url = st.secrets["cds"]["url"]
+        _cds_key = st.secrets["cds"]["key"]
+        st.success("CDS API anahtarı bulundu (Streamlit Secrets).")
+    except Exception:
+        if (Path.home() / ".cdsapirc").exists():
+            st.success("CDS API anahtarı bulundu (~/.cdsapirc).")
+        else:
+            st.error("**CDS API anahtarı bulunamadı.**")
+            st.info(
+                "**Streamlit Cloud kullanıyorsan** → Uygulama sayfasında "
+                "**⋮ → Settings → Secrets** bölümüne şunu ekle:\n"
+                "```toml\n[cds]\nurl = \"https://cds.climate.copernicus.eu/api\"\n"
+                "key = \"BURAYA_TOKEN\"\n```\n\n"
+                "**Yerel çalışıyorsan** → Terminale yaz:\n"
+                "```\necho url: https://cds.climate.copernicus.eu/api > "
+                "%USERPROFILE%\\.cdsapirc\necho key: BURAYA_TOKEN >> "
+                "%USERPROFILE%\\.cdsapirc\n```\n\n"
+                "Token: [cds.climate.copernicus.eu](https://cds.climate.copernicus.eu) "
+                "→ Profil → Personal Access Token"
+            )
+            st.stop()
 
     from src.data.era5_fetcher import download_era5, netcdf_to_dataframe, ERA5_VARIABLES
     import datetime
@@ -297,7 +305,8 @@ if page == "ERA5 Veri İndir":
             with st.spinner("ERA5 verisi indiriliyor… (birkaç dakika sürebilir)"):
                 try:
                     download_era5(lat=lat, lon=lon, start_date=str(start), end_date=str(end),
-                                  variables=selected_vars, output_path=str(nc_path))
+                                  variables=selected_vars, output_path=str(nc_path),
+                                  cds_url=_cds_url, cds_key=_cds_key)
                     st.success(f"İndirildi: {nc_path}")
                 except Exception as e:
                     st.error(f"İndirme hatası: {e}")
@@ -895,117 +904,3 @@ elif page == "Belirsizlik Tahmini":
         file_name=f"{model_choice}_belirsizlik_metrics.json",
         mime="application/json",
     )
-
-    # API key kontrolü
-    cdsapirc = Path.home() / ".cdsapirc"
-    if not cdsapirc.exists():
-        st.error(
-            "**CDS API anahtarı bulunamadı.**\n\n"
-            "1. [cds.climate.copernicus.eu](https://cds.climate.copernicus.eu) adresine kaydol\n"
-            "2. Profil sayfasından **Personal Access Token** al\n"
-            "3. Terminale şunu yaz:\n"
-            "```\n"
-            "! echo url: https://cds.climate.copernicus.eu/api > %USERPROFILE%\\.cdsapirc\n"
-            "! echo key: BURAYA_TOKEN >> %USERPROFILE%\\.cdsapirc\n"
-            "```"
-        )
-        st.stop()
-
-    st.success("CDS API anahtarı bulundu.")
-
-    from src.data.era5_fetcher import download_era5, netcdf_to_dataframe, ERA5_VARIABLES
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("📍 Koordinat")
-        lat = st.number_input("Enlem (Latitude)",  value=41.25, min_value=-90.0,  max_value=90.0,  step=0.01, format="%.2f")
-        lon = st.number_input("Boylam (Longitude)", value=28.75, min_value=-180.0, max_value=180.0, step=0.01, format="%.2f")
-        st.caption("Terkos: 41.38°N, 28.58°E  |  İstanbul: 41.01°N, 28.97°E")
-
-    with col2:
-        import datetime
-        st.subheader("📅 Tarih Aralığı")
-        start = st.date_input("Başlangıç", value=datetime.date(2023, 1, 1))
-        end   = st.date_input("Bitiş",     value=datetime.date(2023, 12, 31))
-
-    st.subheader("📊 Değişken Seçimi")
-    all_var_names = list(ERA5_VARIABLES.keys())
-    default_vars  = [
-        "10m_u_component_of_wind",
-        "10m_v_component_of_wind",
-        "2m_temperature",
-        "surface_pressure",
-        "2m_dewpoint_temperature",
-    ]
-    selected_vars = st.multiselect("ERA5 değişkenleri", all_var_names, default=default_vars)
-
-    nc_path  = Path("data/external/era5_raw.nc")
-    csv_path = Path("data/external/era5_processed.csv")
-
-    dl_btn = st.button("⬇️ ERA5 Verisi İndir", type="primary")
-
-    if dl_btn:
-        if not selected_vars:
-            st.error("En az bir değişken seçin.")
-            st.stop()
-        with st.spinner("ERA5 verisi indiriliyor… (birkaç dakika sürebilir)"):
-            try:
-                download_era5(
-                    lat=lat, lon=lon,
-                    start_date=str(start), end_date=str(end),
-                    variables=selected_vars,
-                    output_path=str(nc_path),
-                )
-                st.success(f"İndirildi: {nc_path}")
-            except Exception as e:
-                st.error(f"İndirme hatası: {e}")
-                st.stop()
-
-        with st.spinner("NetCDF → DataFrame dönüştürülüyor…"):
-            try:
-                era5_df = netcdf_to_dataframe(nc_path)
-                era5_df.to_csv(csv_path, index=False)
-                st.success(f"CSV kaydedildi: {csv_path}")
-            except ImportError:
-                st.error("xarray paketi gerekli. Terminale yaz: `.venv\\Scripts\\pip install xarray netcdf4`")
-                st.stop()
-
-        st.subheader("📋 Veri Önizleme")
-        st.dataframe(era5_df.head(24), use_container_width=True)
-
-        fig, axes = plt.subplots(2, 1, figsize=(12, 5))
-        if "wind_speed_10m" in era5_df.columns:
-            axes[0].plot(era5_df["wind_speed_10m"].values[:720], linewidth=0.8)
-            axes[0].set_title("10m Rüzgar Hızı (ilk 30 gün)")
-            axes[0].set_ylabel("m/s")
-            axes[0].grid(True, alpha=0.3)
-        if "t2m" in era5_df.columns:
-            axes[1].plot(era5_df["t2m"].values[:720], color="orange", linewidth=0.8)
-            axes[1].set_title("2m Sıcaklık (ilk 30 gün)")
-            axes[1].set_ylabel("°C")
-            axes[1].grid(True, alpha=0.3)
-        plt.tight_layout(); st.pyplot(fig); plt.close(fig)
-
-        st.subheader("💾 İndir")
-        c1, c2 = st.columns(2)
-        c1.download_button(
-            "📊 ERA5 CSV İndir",
-            data=era5_df.to_csv(index=False),
-            file_name="era5_processed.csv",
-            mime="text/csv",
-        )
-        st.info(
-            "**Sonraki adım:** Bu CSV'yi 'Tek Model' veya 'Model Karşılaştırması' "
-            "sayfasına yükleyip `wind_speed_10m` sütununu hedef olarak seç."
-        )
-
-    elif csv_path.exists():
-        st.info(f"Önceden indirilmiş veri mevcut: `{csv_path}`")
-        era5_df = pd.read_csv(csv_path, parse_dates=["datetime"])
-        st.dataframe(era5_df.head(10), use_container_width=True)
-        st.download_button(
-            "📊 Mevcut ERA5 CSV İndir",
-            data=era5_df.to_csv(index=False),
-            file_name="era5_processed.csv",
-            mime="text/csv",
-        )

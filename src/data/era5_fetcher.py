@@ -23,6 +23,8 @@ def download_era5(
     end_date: str,
     variables: list[str] | None = None,
     output_path: str = "data/external/era5_raw.nc",
+    cds_url: str | None = None,
+    cds_key: str | None = None,
 ) -> Path:
     """
     Belirtilen koordinat ve tarih aralığı için ERA5 saatlik verisi indirir.
@@ -42,7 +44,10 @@ def download_era5(
     years  = sorted(set(str(d.year) for d in dates))
     months = sorted(set(f"{d.month:02d}" for d in dates))
 
-    c = cdsapi.Client(quiet=True)
+    if cds_url and cds_key:
+        c = cdsapi.Client(url=cds_url, key=cds_key, quiet=True)
+    else:
+        c = cdsapi.Client(quiet=True)
     c.retrieve(
         "reanalysis-era5-single-levels",
         {
