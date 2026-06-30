@@ -137,10 +137,57 @@ def render_horizon_profile(metrics: dict):
     )
 
 
+def _train_location(df, feat_cols, target_col, model_type, cfg, lookback, horizon):
+    if model_type == "xgboost":
+        df = add_lag_features(df, target_col)
+        _lag = [c for c in df.columns if c.startswith(f"{target_col}_")]
+        feat_cols = list(dict.fromkeys(feat_cols + _lag))
+    all_cols = list(dict.fromkeys(feat_cols + [target_col]))
+    train_df, val_df, test_df = split_data(df, 0.8, 0.1)
+    scaler   = fit_scaler(train_df, all_cols)
+    train_s  = scale(train_df, scaler, all_cols)
+    val_s    = scale(val_df,   scaler, all_cols)
+    test_s   = scale(test_df,  scaler, all_cols)
+    X_tr, y_tr = make_sequences(train_s, feat_cols, target_col, lookback, horizon)
+    X_va, y_va = make_sequences(val_s,   feat_cols, target_col, lookback, horizon)
+    X_te, y_te = make_sequences(test_s,  feat_cols, target_col, lookback, horizon)
+    y_pers_s   = make_persistence_sequences(test_s, target_col, lookback, horizon)
+    model = build_model(model_type, {**cfg, "horizon": horizon})
+    model.build((X_tr.shape[1], X_tr.shape[2]))
+    if model_type in ("lstm", "gru"):
+        from tensorflow import keras as _k
+        model.model.fit(
+            X_tr, y_tr,
+            validation_data=(X_va, y_va),
+            epochs=cfg["epochs"],
+            batch_size=cfg["batch_size"],
+            callbacks=[_k.callbacks.EarlyStopping(patience=cfg["patience"], restore_best_weights=True)],
+            verbose=0,
+        )
+    else:
+        model.fit(X_tr, y_tr, X_va, y_va)
+    y_pred = inverse_scale_column(model.predict(X_te), scaler, all_cols, target_col)
+    y_true = inverse_scale_column(y_te,     scaler, all_cols, target_col)
+    y_pers = inverse_scale_column(y_pers_s, scaler, all_cols, target_col)
+    metrics  = compute_metrics(y_true, y_pred)
+    pers_met = compute_metrics(y_true, y_pers)
+    skill    = compute_skill_score(metrics["rmse"], pers_met["rmse"])
+    yt = y_true.ravel() if y_true.ndim > 1 else y_true
+    yp = y_pred.ravel() if y_pred.ndim > 1 else y_pred
+    return {
+        "metrics": metrics,
+        "pers_rmse": pers_met["rmse"],
+        "skill": skill,
+        "y_true": yt,
+        "y_pred": yp,
+        "target_series": df[target_col].values,
+    }
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("💨 Rüzgar Tahmin")
-    page = st.radio("Sayfa", ["Tek Model", "Model Karşılaştırması", "Hiperparametre Optimizasyonu", "Belirsizlik Tahmini", "Gerçek Zamanlı Tahmin", "ERA5 Veri İndir"], label_visibility="collapsed")
+    page = st.radio("Sayfa", ["Tek Model", "Model Karşılaştırması", "Hiperparametre Optimizasyonu", "Belirsizlik Tahmini", "Gerçek Zamanlı Tahmin", "ERA5 Veri İndir", "Lokasyon Karşılaştırması"], label_visibility="collapsed")
     st.divider()
 
     st.subheader("📂 Veri")
@@ -151,7 +198,7 @@ with st.sidebar:
     _sidebar_cols: list[str] = []
     target_col: str = ""
     feature_selection: list[str] = []
-    _needs_cols = page not in ("ERA5 Veri İndir", "Gerçek Zamanlı Tahmin")
+    _needs_cols = page not in ("ERA5 Veri İndir", "Gerçek Zamanlı Tahmin", "Lokasyon Karşılaştırması")
     if uploaded is not None and _needs_cols:
         try:
             _sep_char = "\t" if separator == "\\t" else separator
@@ -198,6 +245,8 @@ with st.sidebar:
         model_choice = st.selectbox("Model tipi", ["lstm", "gru", "xgboost"])
     elif page == "Belirsizlik Tahmini":
         model_choice = st.selectbox("Model tipi", ["lstm", "gru"])
+    elif page == "Lokasyon Karşılaştırması":
+        model_choice = st.selectbox("Model tipi", ["lstm", "gru", "xgboost", "linear"])
     else:
         model_choice = None  # karşılaştırmada hepsi çalışır
 
@@ -227,7 +276,10 @@ with st.sidebar:
         xgb_n_estimators = 500; xgb_max_depth = 6; xgb_lr = 0.05; xgb_patience = 20
     st.divider()
 
-    run_btn = st.button("🚀 Eğit", type="primary", use_container_width=True)
+    if page != "Lokasyon Karşılaştırması":
+        run_btn = st.button("🚀 Eğit", type="primary", use_container_width=True)
+    else:
+        run_btn = False
 
 # ── Başlık ────────────────────────────────────────────────────────────────────
 st.title("💨 Rüzgar Hızı Tahmin Sistemi")
@@ -236,12 +288,12 @@ st.caption("LSTM · GRU · Doğrusal Regresyon — karşılaştırmalı zaman se
 if page == "ERA5 Veri İndir":
     uploaded = None  # ERA5 sayfasında CSV gerekmez
 
-if uploaded is None and page not in ("ERA5 Veri İndir", "Gerçek Zamanlı Tahmin"):
+if uploaded is None and page not in ("ERA5 Veri İndir", "Gerçek Zamanlı Tahmin", "Lokasyon Karşılaştırması"):
     st.info("Sol panelden bir CSV dosyası yükleyin.")
     st.stop()
 
 # ── Ortak veri hazırlığı (ERA5 ve RT sayfalarında atlanır) ───────────────────
-_skip_common = page in ("ERA5 Veri İndir", "Gerçek Zamanlı Tahmin")
+_skip_common = page in ("ERA5 Veri İndir", "Gerçek Zamanlı Tahmin", "Lokasyon Karşılaştırması")
 if not _skip_common:
     sep = "\t" if separator == "\\t" else separator
     uploaded.seek(0)
@@ -546,6 +598,163 @@ if page == "Gerçek Zamanlı Tahmin":
         "📊 Tahmin CSV İndir",
         pred_table.to_csv(index=False),
         f"{sel_model}_rt_tahmin.csv",
+        "text/csv",
+    )
+
+    st.stop()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SAYFA 7 — LOKASYON KARŞILAŞTIRMASI
+# ═══════════════════════════════════════════════════════════════════════════════
+if page == "Lokasyon Karşılaştırması":
+    st.subheader("🗺️ Lokasyon Karşılaştırması")
+    st.caption(f"Aynı model ({model_choice.upper()}) iki farklı lokasyona uygulanır — performans yan yana karşılaştırılır")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### 📍 Lokasyon 1")
+        lc_name1 = st.text_input("Ad", "Lokasyon 1", key="lc_name1")
+        lc_file1 = st.file_uploader("CSV yükle", type=["csv"], key="lc_file1")
+        lc_sep1  = st.selectbox("Separator", [";", ",", "\\t"], key="lc_sep1")
+        lc_dec1  = st.selectbox("Ondalık", [",", "."], key="lc_dec1")
+    with c2:
+        st.markdown("#### 📍 Lokasyon 2")
+        lc_name2 = st.text_input("Ad", "Lokasyon 2", key="lc_name2")
+        lc_file2 = st.file_uploader("CSV yükle", type=["csv"], key="lc_file2")
+        lc_sep2  = st.selectbox("Separator", [";", ",", "\\t"], key="lc_sep2")
+        lc_dec2  = st.selectbox("Ondalık", [",", "."], key="lc_dec2")
+
+    if lc_file1 is None or lc_file2 is None:
+        st.info("Her iki lokasyon için CSV dosyası yükleyin.")
+        st.stop()
+
+    # Sütun seçimi önizlemesi
+    _s1 = "\t" if lc_sep1 == "\\t" else lc_sep1
+    _s2 = "\t" if lc_sep2 == "\\t" else lc_sep2
+    lc_file1.seek(0); lc_file2.seek(0)
+    _df1p = add_cyclic_features(load_csv(lc_file1, _s1, lc_dec1)).select_dtypes(include="number")
+    _df2p = add_cyclic_features(load_csv(lc_file2, _s2, lc_dec2)).select_dtypes(include="number")
+    _cols1 = _df1p.columns.tolist()
+    _cols2 = _df2p.columns.tolist()
+    _wkw = ["wind", "hiz", "speed", "metre", "knot", "kts", "ws"]
+
+    cb1, cb2 = st.columns(2)
+    with cb1:
+        _def1 = next((c for c in _cols1 if any(k in c.lower() for k in _wkw)), _cols1[-1])
+        lc_target1 = st.selectbox(f"{lc_name1} — Hedef sütun", _cols1, index=_cols1.index(_def1), key="lc_t1")
+        lc_feats1  = st.multiselect(f"{lc_name1} — Özellikler", _cols1, default=_cols1, key="lc_f1")
+    with cb2:
+        _def2 = next((c for c in _cols2 if any(k in c.lower() for k in _wkw)), _cols2[-1])
+        lc_target2 = st.selectbox(f"{lc_name2} — Hedef sütun", _cols2, index=_cols2.index(_def2), key="lc_t2")
+        lc_feats2  = st.multiselect(f"{lc_name2} — Özellikler", _cols2, default=_cols2, key="lc_f2")
+
+    st.divider()
+    cmp_btn = st.button("⚔️ Karşılaştır", type="primary", use_container_width=True)
+    if not cmp_btn:
+        st.stop()
+
+    # Eğitim konfigürasyonu (sidebar parametrelerinden)
+    _lc_cfg = {
+        "units": [units_1, units_2],
+        "dropout": dropout,
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "learning_rate": xgb_lr if model_choice == "xgboost" else lr,
+        "patience": xgb_patience if model_choice == "xgboost" else patience,
+        "n_estimators": xgb_n_estimators,
+        "max_depth": xgb_max_depth,
+        "colsample_bytree": 0.8,
+        "subsample": 0.8,
+    }
+
+    lc_results: dict[str, dict] = {}
+    for _nm, _file, _sep, _dec, _tgt, _fts in [
+        (lc_name1, lc_file1, _s1, lc_dec1, lc_target1, lc_feats1),
+        (lc_name2, lc_file2, _s2, lc_dec2, lc_target2, lc_feats2),
+    ]:
+        with st.status(f"{_nm} eğitiliyor…", expanded=False) as _st:
+            _file.seek(0)
+            _df = add_cyclic_features(load_csv(_file, _sep, _dec)).select_dtypes(include="number")
+            _res = _train_location(_df, list(_fts), _tgt, model_choice, _lc_cfg, lookback, horizon)
+            _st.update(
+                label=f"{_nm} — R²: {_res['metrics']['r2']:.4f}  RMSE: {_res['metrics']['rmse']:.4f}  Skill: {_res['skill']:+.4f}",
+                state="complete",
+            )
+            lc_results[_nm] = _res
+
+    _names = list(lc_results.keys())
+    _r     = [lc_results[n] for n in _names]
+
+    # ── Metrik Tablosu ────────────────────────────────────────────────────────
+    st.subheader("📊 Karşılaştırma Tablosu")
+    _cmp = pd.DataFrame({
+        "Metrik":   ["R²", "RMSE (m/s)", "MAE (m/s)", "Skill Score", "Pers. RMSE"],
+        _names[0]:  [round(_r[0]["metrics"]["r2"], 4), round(_r[0]["metrics"]["rmse"], 4),
+                     round(_r[0]["metrics"]["mae"], 4), round(_r[0]["skill"], 4), round(_r[0]["pers_rmse"], 4)],
+        _names[1]:  [round(_r[1]["metrics"]["r2"], 4), round(_r[1]["metrics"]["rmse"], 4),
+                     round(_r[1]["metrics"]["mae"], 4), round(_r[1]["skill"], 4), round(_r[1]["pers_rmse"], 4)],
+    }).set_index("Metrik")
+    st.dataframe(
+        _cmp.style.highlight_max(subset=[_names[0], _names[1]], axis=1, color="#d4edda"),
+        use_container_width=True,
+    )
+    _best = _names[0] if _r[0]["metrics"]["r2"] >= _r[1]["metrics"]["r2"] else _names[1]
+    _best_skill = lc_results[_best]["skill"]
+    _skill_lbl = "✓ faydalı (>0.30)" if _best_skill >= 0.3 else "△ geliştirilebilir"
+    st.success(f"**{model_choice.upper()} için daha iyi lokasyon: {_best}** — R²={lc_results[_best]['metrics']['r2']:.4f}  Skill={_best_skill:+.4f}  {_skill_lbl}")
+
+    # ── Skill Score Grafiği ───────────────────────────────────────────────────
+    st.subheader("🏆 Skill Score Karşılaştırması")
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    _skills = [_r[0]["skill"], _r[1]["skill"]]
+    _bar_colors = ["#4C72B0" if s >= 0 else "#E84855" for s in _skills]
+    _bars = ax.bar(_names, _skills, color=_bar_colors, width=0.4)
+    ax.bar_label(_bars, fmt="%+.4f", padding=4, fontsize=10)
+    ax.axhline(0, color="black", linewidth=1, linestyle="--", alpha=0.6, label="Persistence = 0")
+    ax.set_ylabel("Skill Score"); ax.set_title(f"Skill Score — {model_choice.upper()}")
+    ax.legend(); ax.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout(); st.pyplot(fig); plt.close(fig)
+
+    # ── Tahmin Grafikleri ─────────────────────────────────────────────────────
+    st.subheader("📈 Tahmin Grafikleri (ilk 200 test adımı)")
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    for ax, name, res in zip(axes, _names, _r):
+        n = min(len(res["y_true"]), 200)
+        ax.plot(res["y_true"][:n], label="Gerçek", linewidth=0.9, alpha=0.85)
+        ax.plot(res["y_pred"][:n], label="Tahmin", linewidth=0.9, alpha=0.85)
+        ax.set_title(f"{name}\nR²={res['metrics']['r2']:.4f}  RMSE={res['metrics']['rmse']:.4f}")
+        ax.set_xlabel("Zaman adımı"); ax.set_ylabel("Rüzgar hızı (m/s)")
+        ax.legend(); ax.grid(True, alpha=0.3)
+    plt.tight_layout(); st.pyplot(fig); plt.close(fig)
+
+    # ── Scatter Grafikleri ────────────────────────────────────────────────────
+    st.subheader("🎯 Scatter — Gerçek vs Tahmin")
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    for ax, name, res in zip(axes, _names, _r):
+        yt, yp = res["y_true"], res["y_pred"]
+        lims = [min(yt.min(), yp.min()), max(yt.max(), yp.max())]
+        ax.scatter(yt, yp, alpha=0.3, s=6)
+        ax.plot(lims, lims, "r--", linewidth=1)
+        ax.set_title(f"{name} — R²={res['metrics']['r2']:.4f}")
+        ax.set_xlabel("Gerçek"); ax.set_ylabel("Tahmin"); ax.grid(True, alpha=0.3)
+    plt.tight_layout(); st.pyplot(fig); plt.close(fig)
+
+    # ── Rüzgar Hızı Dağılımı ─────────────────────────────────────────────────
+    st.subheader("🌬️ Rüzgar Hızı Dağılımı")
+    fig, ax = plt.subplots(figsize=(10, 4))
+    for name, res, color in zip(_names, _r, ["#4C72B0", "#DD8452"]):
+        ax.hist(res["target_series"], bins=50, alpha=0.55, label=name, color=color, density=True)
+    ax.set_xlabel("Rüzgar hızı (m/s)"); ax.set_ylabel("Yoğunluk")
+    ax.set_title("Tam Veri Seti — Rüzgar Hızı Dağılımı Karşılaştırması")
+    ax.legend(); ax.grid(True, alpha=0.3)
+    plt.tight_layout(); st.pyplot(fig); plt.close(fig)
+
+    # ── İndir ─────────────────────────────────────────────────────────────────
+    st.subheader("💾 İndir")
+    st.download_button(
+        "📄 Karşılaştırma Tablosu (CSV)",
+        _cmp.to_csv(),
+        "lokasyon_karsilastirma.csv",
         "text/csv",
     )
 
