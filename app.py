@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from src.data.loader import load_csv
-from src.data.preprocessor import add_cyclic_features, split_data, fit_scaler, scale, inverse_scale_column
+from src.data.preprocessor import add_cyclic_features, add_lag_features, split_data, fit_scaler, scale, inverse_scale_column
 from src.data.sequencer import make_sequences, make_persistence_sequences
 from src.evaluation.metrics import compute_metrics, compute_skill_score
 
@@ -34,6 +34,9 @@ def build_model(model_type: str, cfg: dict):
     elif model_type == "gru":
         from src.models.gru import GRUModel
         return GRUModel(cfg)
+    elif model_type == "xgboost":
+        from src.models.xgboost_model import XGBoostModel
+        return XGBoostModel(cfg)
     else:
         from src.models.linear import LinearModel
         return LinearModel(cfg)
@@ -144,8 +147,41 @@ with st.sidebar:
     uploaded = st.file_uploader("CSV dosyası yükle", type=["csv"])
     separator = st.selectbox("Separator", [";", ",", "\\t"], index=0)
     decimal   = st.selectbox("Ondalık ayırıcı", [",", "."], index=0)
-    target_col = st.text_input("Hedef sütun", value="on_metre")
+
+    _sidebar_cols: list[str] = []
+    target_col: str = ""
+    feature_selection: list[str] = []
+    _needs_cols = page not in ("ERA5 Veri İndir", "Gerçek Zamanlı Tahmin")
+    if uploaded is not None and _needs_cols:
+        try:
+            _sep_char = "\t" if separator == "\\t" else separator
+            uploaded.seek(0)
+            _prev = load_csv(uploaded, separator=_sep_char, decimal=decimal)
+            _prev = add_cyclic_features(_prev)
+            _sidebar_cols = _prev.select_dtypes(include="number").columns.tolist()
+            if _sidebar_cols:
+                _wind_keywords = ["wind", "hiz", "speed", "metre", "knot", "kts", "ws"]
+                _default_target = next(
+                    (c for c in _sidebar_cols if any(k in c.lower() for k in _wind_keywords)),
+                    _sidebar_cols[-1],
+                )
+                target_col = st.selectbox(
+                    "Hedef sütun (tahmin edilecek)",
+                    _sidebar_cols,
+                    index=_sidebar_cols.index(_default_target),
+                )
+                feature_selection = st.multiselect(
+                    "Özellikler (feature)",
+                    _sidebar_cols,
+                    default=[c for c in _sidebar_cols if c != target_col],
+                )
+        except Exception as _e:
+            st.warning(f"Sütunlar okunamadı — separator/ondalık ayarını kontrol et. ({_e})")
+    elif _needs_cols:
+        st.caption("CSV yüklenince sütun seçimi aktif olur.")
+
     autoregressive = st.checkbox("Autoregressive (hedef geçmişi özellik olarak ekle)", value=True)
+    use_lag_features = st.checkbox("Lag özellikler ekle (XGBoost için önerilir)", value=False)
     train_ratio = st.slider("Train oranı (%)", 60, 90, 80) / 100
     val_ratio   = st.slider("Validation oranı (%)", 5, 20, 10) / 100
     st.divider()
@@ -157,19 +193,36 @@ with st.sidebar:
 
     st.subheader("🧠 Model Hiperparametreleri")
     if page == "Tek Model":
-        model_choice = st.selectbox("Model tipi", ["lstm", "gru", "linear"])
+        model_choice = st.selectbox("Model tipi", ["lstm", "gru", "xgboost", "linear"])
     elif page in ("Hiperparametre Optimizasyonu", "Belirsizlik Tahmini"):
         model_choice = st.selectbox("Model tipi", ["lstm", "gru"])
     else:
-        model_choice = None  # karşılaştırmada üçü de çalışır
+        model_choice = None  # karşılaştırmada hepsi çalışır
 
-    epochs     = st.slider("Max epoch", 10, 200, 100)
-    batch_size = st.selectbox("Batch size", [16, 32, 64], index=1)
-    units_1    = st.slider("1. katman nöron", 16, 256, 64, step=16)
-    units_2    = st.slider("2. katman nöron", 8, 128, 32, step=8)
-    dropout    = st.slider("Dropout", 0.0, 0.5, 0.2, step=0.05)
-    patience   = st.slider("Early stopping patience", 3, 30, 10)
-    lr         = st.select_slider("Learning rate", [0.01, 0.001, 0.0005, 0.0001], value=0.001)
+    _is_xgb = model_choice == "xgboost"
+    _is_dl  = model_choice in ("lstm", "gru")
+
+    # Derin öğrenme parametreleri (LSTM/GRU)
+    if not _is_xgb:
+        epochs     = st.slider("Max epoch", 10, 200, 100)
+        batch_size = st.selectbox("Batch size", [16, 32, 64], index=1)
+        units_1    = st.slider("1. katman nöron", 16, 256, 64, step=16)
+        units_2    = st.slider("2. katman nöron", 8, 128, 32, step=8)
+        dropout    = st.slider("Dropout", 0.0, 0.5, 0.2, step=0.05)
+        patience   = st.slider("Early stopping patience", 3, 30, 10)
+        lr         = st.select_slider("Learning rate", [0.01, 0.001, 0.0005, 0.0001], value=0.001)
+    else:
+        epochs = batch_size = units_1 = units_2 = 0
+        dropout = 0.0; patience = 0; lr = 0.0
+
+    # XGBoost parametreleri
+    if _is_xgb:
+        xgb_n_estimators = st.slider("Ağaç sayısı (n_estimators)", 100, 2000, 500, step=100)
+        xgb_max_depth    = st.slider("Maks derinlik (max_depth)", 3, 10, 6)
+        xgb_lr           = st.select_slider("Learning rate (XGB)", [0.3, 0.1, 0.05, 0.01], value=0.05)
+        xgb_patience     = st.slider("Early stopping patience", 10, 50, 20)
+    else:
+        xgb_n_estimators = 500; xgb_max_depth = 6; xgb_lr = 0.05; xgb_patience = 20
     st.divider()
 
     run_btn = st.button("🚀 Eğit", type="primary", use_container_width=True)
@@ -189,22 +242,32 @@ if uploaded is None and page not in ("ERA5 Veri İndir", "Gerçek Zamanlı Tahmi
 _skip_common = page in ("ERA5 Veri İndir", "Gerçek Zamanlı Tahmin")
 if not _skip_common:
     sep = "\t" if separator == "\\t" else separator
+    uploaded.seek(0)
     df  = load_csv(uploaded, separator=sep, decimal=decimal)
-
-    if target_col not in df.columns:
-        st.error(f"'{target_col}' sütunu bulunamadı. Mevcut: {list(df.columns)}")
-        st.stop()
-
-if not _skip_common:
     df = add_cyclic_features(df)
-    # Sayısal olmayan sütunları (datetime, string vb.) otomatik çıkar
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     dropped = [c for c in df.columns if c not in numeric_cols]
     if dropped:
         df = df[numeric_cols]
         st.caption(f"Sayısal olmayan sütunlar çıkarıldı: {dropped}")
 
-    feature_cols = list(df.columns) if autoregressive else [c for c in df.columns if c != target_col]
+    if not target_col or target_col not in df.columns:
+        st.error(f"Hedef sütun seçilmedi veya bulunamadı. Mevcut: {list(df.columns)}")
+        st.stop()
+
+    if use_lag_features:
+        df = add_lag_features(df, target_col)
+        st.caption(f"Lag özellikler eklendi — yeni boyut: {df.shape[1]} sütun, {len(df)} satır")
+
+    # Sidebar'dan gelen feature seçimini kullan; hiçbir şey seçilmemişse fallback
+    _base_features = [c for c in feature_selection if c in df.columns]
+    # Lag özellikleri otomatik ekle (sidebar multiselect yeniden yüklenmeden önce)
+    if use_lag_features:
+        _lag_cols = [c for c in df.columns if c.startswith(f"{target_col}_")]
+        _base_features = list(dict.fromkeys(_base_features + _lag_cols))
+    if autoregressive and target_col not in _base_features:
+        _base_features.append(target_col)
+    feature_cols = _base_features if _base_features else [c for c in df.columns if c != target_col]
     all_columns  = list(dict.fromkeys(feature_cols + [target_col]))
 
     with st.expander("📋 Veri Önizleme", expanded=False):
@@ -234,9 +297,13 @@ if not _skip_common:
         "dropout": dropout,
         "epochs": epochs,
         "batch_size": batch_size,
-        "learning_rate": lr,
-        "patience": patience,
+        "learning_rate": xgb_lr if _is_xgb else lr,
+        "patience": xgb_patience if _is_xgb else patience,
         "horizon": horizon,
+        "n_estimators": xgb_n_estimators,
+        "max_depth": xgb_max_depth,
+        "colsample_bytree": 0.8,
+        "subsample": 0.8,
     }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -378,7 +445,10 @@ if page == "Gerçek Zamanlı Tahmin":
         saved_features = [c for c in saved_cols if c != saved_target]
 
         st.caption(f"Lookback: {saved_lookback}h · Horizon: {saved_horizon}h · {len(saved_features)} özellik")
-        show_steps = st.slider("Gösterilecek adım sayısı", 1, saved_horizon, min(saved_horizon, 6))
+        if saved_horizon > 1:
+            show_steps = st.slider("Gösterilecek adım sayısı", 1, saved_horizon, min(saved_horizon, 6))
+        else:
+            show_steps = 1
 
     with col_data:
         st.subheader("📂 Son Dönem Verisi")
@@ -498,8 +568,7 @@ if page == "Tek Model":
     if model_choice in ("lstm", "gru"):
         history = train_dl_model(model, X_train, y_train, X_val, y_val, dl_cfg, bar, info)
     else:
-        model.fit(X_train, y_train)
-        history = {}
+        history = model.fit(X_train, y_train, X_val, y_val)
         bar.progress(1.0)
 
     info.success("Eğitim tamamlandı!")
@@ -560,17 +629,21 @@ elif page == "Model Karşılaştırması":
     histories: dict[str, dict] = {}
     predictions: dict[str, tuple] = {}
 
-    for mtype in ["lstm", "gru", "linear"]:
+    for mtype in ["lstm", "gru", "xgboost", "linear"]:
         with st.status(f"{mtype.upper()} eğitiliyor…", expanded=False) as status:
             info = st.empty()
             bar  = st.progress(0)
-            m = build_model(mtype, {**dl_cfg, "horizon": horizon})
+            # XGBoost karşılaştırmada kendi lr/patience'ını kullanmalı
+            _mtype_cfg = {**dl_cfg, "horizon": horizon}
+            if mtype == "xgboost":
+                _mtype_cfg["learning_rate"] = xgb_lr
+                _mtype_cfg["patience"]      = xgb_patience
+            m = build_model(mtype, _mtype_cfg)
             m.build((X_train.shape[1], X_train.shape[2]))
             if mtype in ("lstm", "gru"):
                 h = train_dl_model(m, X_train, y_train, X_val, y_val, dl_cfg, bar, info)
             else:
-                m.fit(X_train, y_train)
-                h = {}
+                h = m.fit(X_train, y_train, X_val, y_val)
                 bar.progress(1.0)
             y_true, y_pred = get_predictions(m, X_test, y_test, scaler, all_columns, target_col)
             met = compute_metrics(y_true, y_pred)
@@ -620,7 +693,7 @@ elif page == "Model Karşılaştırması":
     # ── Bar chart ─────────────────────────────────────────────────────────────
     st.subheader("📈 Metrik Grafiği")
     fig, axes = plt.subplots(1, 3, figsize=(13, 4))
-    colors = ["#4C72B0", "#DD8452", "#55A868"]
+    colors = ["#4C72B0", "#DD8452", "#8172B2", "#55A868"]
     models = list(results.keys())
     for ax, key, ylabel in zip(axes, ["r2", "rmse", "mae"], ["R²", "RMSE (m/s)", "MAE (m/s)"]):
         vals = [results[m][key] for m in models]
@@ -669,8 +742,8 @@ elif page == "Model Karşılaştırması":
     for (mtype, h), color in zip(histories.items(), colors):
         if not h.get("loss"):
             continue
-        axes[0].plot(h["loss"],     label=mtype.upper(), color=color)
-        axes[1].plot(h["val_loss"], label=mtype.upper(), color=color)
+        axes[0].plot(h["loss"],             label=mtype.upper(), color=color)
+        axes[1].plot(h.get("val_loss", []), label=mtype.upper(), color=color)
     for ax, title in zip(axes, ["Train Loss", "Validation Loss"]):
         ax.set_title(title); ax.set_xlabel("Epoch"); ax.set_ylabel("MSE")
         ax.legend(); ax.grid(True, alpha=0.3)
