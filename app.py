@@ -194,7 +194,9 @@ with st.sidebar:
     st.subheader("🧠 Model Hiperparametreleri")
     if page == "Tek Model":
         model_choice = st.selectbox("Model tipi", ["lstm", "gru", "xgboost", "linear"])
-    elif page in ("Hiperparametre Optimizasyonu", "Belirsizlik Tahmini"):
+    elif page == "Hiperparametre Optimizasyonu":
+        model_choice = st.selectbox("Model tipi", ["lstm", "gru", "xgboost"])
+    elif page == "Belirsizlik Tahmini":
         model_choice = st.selectbox("Model tipi", ["lstm", "gru"])
     else:
         model_choice = None  # karşılaştırmada hepsi çalışır
@@ -813,14 +815,24 @@ elif page == "Hiperparametre Optimizasyonu":
     # ── En iyi parametreler ───────────────────────────────────────────────────
     best = opt_result["best_params"]
     st.subheader("🏆 En İyi Hiperparametreler")
-    bp1, bp2, bp3, bp4 = st.columns(4)
-    bp1.metric("Katman 1 nöron", best["units"][0])
-    bp2.metric("Katman 2 nöron", best["units"][1])
-    bp3.metric("Dropout",        best["dropout"])
-    bp4.metric("Learning rate",  best["learning_rate"])
-    b1, b2 = st.columns(2)
-    b1.metric("Batch size", best["batch_size"])
-    b2.metric("Val Loss",   f"{opt_result['best_val_loss']:.5f}")
+    if model_choice == "xgboost":
+        bp1, bp2, bp3 = st.columns(3)
+        bp1.metric("Ağaç sayısı",   best["n_estimators"])
+        bp2.metric("Maks derinlik", best["max_depth"])
+        bp3.metric("Learning rate", best["learning_rate"])
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Subsample",        best["subsample"])
+        b2.metric("Colsample bytree", best["colsample_bytree"])
+        b3.metric("Val RMSE",         f"{opt_result['best_val_loss']:.5f}")
+    else:
+        bp1, bp2, bp3, bp4 = st.columns(4)
+        bp1.metric("Katman 1 nöron", best["units"][0])
+        bp2.metric("Katman 2 nöron", best["units"][1])
+        bp3.metric("Dropout",        best["dropout"])
+        bp4.metric("Learning rate",  best["learning_rate"])
+        b1, b2 = st.columns(2)
+        b1.metric("Batch size", best["batch_size"])
+        b2.metric("Val Loss",   f"{opt_result['best_val_loss']:.5f}")
 
     # ── Tüm denemeler tablosu ─────────────────────────────────────────────────
     with st.expander("📋 Tüm denemeler"):
@@ -840,11 +852,16 @@ elif page == "Hiperparametre Optimizasyonu":
 
     final_model = build_model(model_choice, best)
     final_model.build((X_train.shape[1], X_train.shape[2]))
-    history = train_dl_model(
-        final_model, X_train, y_train, X_val, y_val,
-        best, bar2, info2,
-    )
-    info2.success("Tam eğitim tamamlandı!")
+    if model_choice == "xgboost":
+        history = final_model.fit(X_train, y_train, X_val, y_val)
+        bar2.progress(1.0)
+        info2.success("Tam eğitim tamamlandı!")
+    else:
+        history = train_dl_model(
+            final_model, X_train, y_train, X_val, y_val,
+            best, bar2, info2,
+        )
+        info2.success("Tam eğitim tamamlandı!")
 
     y_true, y_pred = get_predictions(
         final_model, X_test, y_test, scaler, all_columns, target_col

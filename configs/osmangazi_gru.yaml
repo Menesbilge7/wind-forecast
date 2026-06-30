@@ -1,0 +1,38 @@
+﻿location: osmangazi
+
+data:
+  path: data/raw/osmangazi.csv
+  separator: ";"
+  decimal: "."
+  target_column: on_metre
+  feature_columns:
+    - saat_sin
+    - saat_cos
+    - gunler_sin
+    - gunler_cos
+    - otuz_metre
+    - yirmi_metre
+    - on_metre
+    - sicaklik
+    - nem
+    - basinc
+  train_ratio: 0.8
+  val_ratio: 0.1
+
+sequence:
+  lookback: 24
+  horizon: 1
+
+model:
+  type: gru
+  units: [64, 32]
+  dropout: 0.2
+  epochs: 100
+  batch_size: 32
+  learning_rate: 0.001
+  patience: 10
+
+output:
+  models_dir: outputs/models
+  plots_dir: outputs/plots
+  reports_dir: outputs/reports

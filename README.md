@@ -21,18 +21,31 @@ A modular machine learning framework for wind speed forecasting. Supports multip
 
 ## Benchmark Results
 
-Terkos station · 10 m wind speed · 1-hour ahead · test set (10 % holdout)
+*Skill Score = 1 − RMSE_model / RMSE_persistence*
+
+### Terkos (summer, days 109–277, n=4039)
+10 m wind speed · 1-hour ahead · test set (10 % holdout)
 
 | Model | R² | RMSE (m/s) | MAE (m/s) | Skill Score |
 |---|---|---|---|---|
-| Linear Regression | **0.880** | **1.032** | **0.698** | **+0.031** |
-| GRU | 0.878 | 1.039 | 0.725 | +0.024 |
+| **Linear Regression** | **0.880** | **1.032** | **0.698** | **+0.031** |
 | XGBoost + lag features | 0.877 | 1.039 | 0.738 | +0.025 |
+| GRU | 0.878 | 1.039 | 0.725 | +0.024 |
 | LSTM | 0.873 | 1.061 | 0.739 | +0.003 |
-| XGBoost (raw) | 0.871 | 1.070 | 0.756 | -0.005 |
 | Persistence baseline | 0.872 | 1.065 | 0.690 | 0.000 |
 
-*Skill Score = 1 − RMSE_model / RMSE_persistence*
+### Osmangazi (full year, days 1–365, n=8637)
+10 m wind speed · 1-hour ahead · test set (10 % holdout)
+
+| Model | R² | RMSE (m/s) | MAE (m/s) | Skill Score |
+|---|---|---|---|---|
+| **LSTM** | **0.8941** | **0.9337** | — | **+0.010** |
+| XGBoost + lag features | 0.8939 | 0.9356 | 0.678 | +0.008 |
+| GRU | 0.8907 | 0.9484 | 0.702 | -0.006 |
+| Persistence baseline | 0.8920 | 0.9428 | 0.678 | 0.000 |
+| Linear Regression | 0.8341 | 1.1684 | 0.744 | -0.239 |
+
+> **Insight:** Summer-only data (Terkos) favours simpler models; full-year data with seasonal variability (Osmangazi) gives the edge to LSTM and XGBoost with lag features.
 
 ---
 
