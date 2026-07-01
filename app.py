@@ -187,7 +187,7 @@ def _train_location(df, feat_cols, target_col, model_type, cfg, lookback, horizo
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("💨 Rüzgar Tahmin")
-    page = st.radio("Sayfa", ["Tek Model", "Model Karşılaştırması", "Hiperparametre Optimizasyonu", "Belirsizlik Tahmini", "Gerçek Zamanlı Tahmin", "ERA5 Veri İndir", "Lokasyon Karşılaştırması"], label_visibility="collapsed")
+    page = st.radio("Sayfa", ["Tek Model", "Model Karşılaştırması", "Hiperparametre Optimizasyonu", "Belirsizlik Tahmini", "Gerçek Zamanlı Tahmin", "ERA5 Veri İndir", "Lokasyon Karşılaştırması", "SHAP Özellik Önemi"], label_visibility="collapsed")
     st.divider()
 
     st.subheader("📂 Veri")
@@ -247,6 +247,9 @@ with st.sidebar:
         model_choice = st.selectbox("Model tipi", ["lstm", "gru"])
     elif page == "Lokasyon Karşılaştırması":
         model_choice = st.selectbox("Model tipi", ["lstm", "gru", "xgboost", "linear"])
+    elif page == "SHAP Özellik Önemi":
+        st.caption("⚙️ SHAP analizi XGBoost modeli ile yapılır")
+        model_choice = "xgboost"
     else:
         model_choice = None  # karşılaştırmada hepsi çalışır
 
@@ -1202,4 +1205,163 @@ elif page == "Belirsizlik Tahmini":
         data=json.dumps(safe, indent=2),
         file_name=f"{model_choice}_belirsizlik_metrics.json",
         mime="application/json",
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SAYFA 8 — SHAP ÖZELLİK ÖNEMİ
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "SHAP Özellik Önemi":
+    st.subheader("🔍 SHAP Özellik Önemi Analizi")
+    st.caption("XGBoost modeli üzerinden hangi özellikler tahmini nasıl etkiliyor?")
+    st.info(
+        "**Nasıl çalışır?** SHAP (SHapley Additive exPlanations) her özelliğin her "
+        "tahminde ne kadar katkı sağladığını hesaplar. **Pozitif SHAP** → tahmini artırır, "
+        "**negatif SHAP** → tahmini azaltır. Ağaç tabanlı modeller için tam ve hızlı hesaplanır."
+    )
+    if use_lag_features:
+        st.caption(f"Lag özellikler aktif — toplam {len(feature_cols)} özellik · {lookback * len(feature_cols)} SHAP boyutu")
+    else:
+        st.caption(
+            "💡 **İpucu:** Sol panelden 'Lag özellikler ekle' seçeneğini aktif et — "
+            "geçmiş değerlerin de SHAP analizinde görünmesini sağlar."
+        )
+
+    with st.spinner("XGBoost eğitiliyor…"):
+        _shap_model = build_model("xgboost", {**dl_cfg, "horizon": horizon})
+        _shap_model.build((X_train.shape[1], X_train.shape[2]))
+        _shap_model.fit(X_train, y_train, X_val, y_val)
+
+    y_true_shap, y_pred_shap = get_predictions(
+        _shap_model, X_test, y_test, scaler, all_columns, target_col
+    )
+    _shap_met = compute_metrics(y_true_shap, y_pred_shap)
+    _sm1, _sm2, _sm3 = st.columns(3)
+    _sm1.metric("R²",       f"{_shap_met['r2']:.4f}")
+    _sm2.metric("RMSE m/s", f"{_shap_met['rmse']:.4f}")
+    _sm3.metric("MAE m/s",  f"{_shap_met['mae']:.4f}")
+
+    with st.spinner("SHAP değerleri hesaplanıyor…"):
+        import shap as _shap_lib
+        _n_feat  = len(feature_cols)
+        _n_steps = lookback
+        X_flat_test = X_test.reshape(len(X_test), -1)
+
+        flat_names = []
+        for _step in range(_n_steps):
+            _lag = _n_steps - 1 - _step
+            for _fn in feature_cols:
+                flat_names.append(f"{_fn}_t-{_lag}" if _lag > 0 else f"{_fn}_t0")
+
+        _explainer = _shap_lib.TreeExplainer(_shap_model.model)
+        _n_shap    = min(300, len(X_flat_test))
+        _shap_exp  = _explainer(X_flat_test[:_n_shap])
+        _shap_arr  = _shap_exp.values  # (n_shap, n_steps * n_feat)
+
+    # Ortalama |SHAP| per original feature (time steps toplamı)
+    _mean_abs = np.zeros(_n_feat)
+    for _j in range(_n_feat):
+        _idxs = [_s * _n_feat + _j for _s in range(_n_steps)]
+        _mean_abs[_j] = np.abs(_shap_arr[:, _idxs]).mean()
+    _sort_idx = np.argsort(_mean_abs)[::-1]
+
+    _tab1, _tab2, _tab3 = st.tabs(["📊 Global Önem", "🗓 Zaman Isı Haritası", "🔎 Tek Tahmin"])
+
+    with _tab1:
+        st.subheader("Özellik Önem Sıralaması")
+        st.caption(f"Her özellik için {_n_steps} zaman adımındaki ortalama |SHAP| değeri")
+        _labels = [feature_cols[i] for i in _sort_idx]
+        _vals   = [_mean_abs[i]   for i in _sort_idx]
+        fig, ax = plt.subplots(figsize=(8, max(3, _n_feat * 0.45)))
+        _cmap   = plt.cm.RdYlBu_r(np.linspace(0.2, 0.8, len(_labels)))
+        _bars   = ax.barh(_labels[::-1], _vals[::-1], color=_cmap[::-1])
+        ax.bar_label(_bars, fmt="%.4f", padding=3, fontsize=9)
+        ax.set_xlabel("Ortalama |SHAP değeri|")
+        ax.set_title(f"XGBoost — Özellik Önemi (Lookback={lookback}h üzerinde toplanmış)")
+        ax.grid(True, alpha=0.3, axis="x")
+        plt.tight_layout(); st.pyplot(fig); plt.close(fig)
+
+        st.dataframe(
+            pd.DataFrame({
+                "Sıra":         list(range(1, _n_feat + 1)),
+                "Özellik":      _labels,
+                "Ort. |SHAP|":  [round(v, 6) for v in _vals],
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with _tab2:
+        st.subheader("Zaman Gecikmesi × Özellik Isı Haritası")
+        st.caption("Her özelliğin her saat gecikmesindeki ortalama |SHAP| etkisi — sıcak renk yüksek etki")
+        import seaborn as _sns
+        _heatmap = np.zeros((_n_steps, _n_feat))
+        for _s in range(_n_steps):
+            for _j in range(_n_feat):
+                _heatmap[_s, _j] = np.abs(_shap_arr[:, _s * _n_feat + _j]).mean()
+
+        _lag_labels = [
+            f"t-{_n_steps-1-s}" if (_n_steps - 1 - s) > 0 else "t0"
+            for s in range(_n_steps)
+        ]
+        fig, ax = plt.subplots(figsize=(max(8, _n_feat * 0.9), max(5, _n_steps * 0.28)))
+        _sns.heatmap(
+            _heatmap,
+            xticklabels=feature_cols,
+            yticklabels=_lag_labels,
+            cmap="YlOrRd",
+            ax=ax,
+            cbar_kws={"label": "Ort. |SHAP|"},
+            linewidths=0.1,
+        )
+        ax.set_title("SHAP — Zaman Adımı × Özellik Isı Haritası")
+        ax.set_xlabel("Özellik"); ax.set_ylabel("Zaman gecikmesi (t0 = en yakın saat)")
+        plt.tight_layout(); st.pyplot(fig); plt.close(fig)
+        st.caption(
+            "**Yorum:** t0 = en yakın saat, t-(N-1) = N saat öncesi. "
+            "En sıcak hücre o özelliğin o saatteki tahmini en fazla etkilediği noktadır."
+        )
+
+    with _tab3:
+        st.subheader("Tek Tahmin Analizi")
+        st.caption("Seçilen test örneği için her özelliğin bireysel katkısı")
+        _sample_idx = st.slider("Test örneği (indeks)", 0, _n_shap - 1, 0)
+
+        _sv   = _shap_arr[_sample_idx]
+        _base = float(np.atleast_1d(_explainer.expected_value)[0])
+        _top_n = min(20, len(flat_names))
+        _top_i = np.argsort(np.abs(_sv))[::-1][:_top_n]
+        _top_names = [flat_names[i] for i in _top_i]
+        _top_vals  = [float(_sv[i]) for i in _top_i]
+
+        fig, ax = plt.subplots(figsize=(9, max(4, _top_n * 0.35)))
+        _clrs = ["#E84855" if v > 0 else "#4C72B0" for v in _top_vals]
+        _bars = ax.barh(_top_names[::-1], _top_vals[::-1], color=_clrs[::-1])
+        ax.axvline(0, color="black", linewidth=0.8)
+        ax.set_xlabel("SHAP katkısı (ölçekli uzayda)")
+        ax.set_title(
+            f"Test #{_sample_idx} — En etkili {_top_n} özellik\n"
+            f"Baz değer (ortalama tahmin): {_base:.4f}  |  "
+            f"Kırmızı = artırır · Mavi = azaltır"
+        )
+        ax.grid(True, alpha=0.3, axis="x")
+        plt.tight_layout(); st.pyplot(fig); plt.close(fig)
+
+        _yt_s = float(y_true_shap.ravel()[_sample_idx])
+        _yp_s = float(y_pred_shap.ravel()[_sample_idx])
+        _c1, _c2, _c3 = st.columns(3)
+        _c1.metric("Gerçek",  f"{_yt_s:.3f} m/s")
+        _c2.metric("Tahmin",  f"{_yp_s:.3f} m/s")
+        _c3.metric("Hata",    f"{abs(_yt_s - _yp_s):.3f} m/s")
+
+    st.subheader("💾 İndir")
+    _shap_df = pd.DataFrame({
+        "Sıra":         list(range(1, _n_feat + 1)),
+        "Özellik":      [feature_cols[i] for i in _sort_idx],
+        "Ort. |SHAP|":  [round(_mean_abs[i], 6) for i in _sort_idx],
+    })
+    st.download_button(
+        "📄 SHAP Önem Tablosu (CSV)",
+        _shap_df.to_csv(index=False),
+        "shap_feature_importance.csv",
+        "text/csv",
     )
